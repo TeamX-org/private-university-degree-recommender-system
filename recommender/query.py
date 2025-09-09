@@ -1,3 +1,5 @@
+from fastapi import FastAPI
+from pydantic import BaseModel
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
@@ -14,43 +16,48 @@ QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Connect to Qdrant
+# Initialize clients
 client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
-
-# Load embedding model
 model = SentenceTransformer("all-MiniLM-L6-v2")
-
-# Connect to Cohere
 co = cohere.Client(COHERE_API_KEY)
-
-# Connect to Gemini
 genai.configure(api_key=GEMINI_API_KEY)
 gemini_model = genai.GenerativeModel("gemini-1.5-flash")
 
-def search_and_answer(question, top_k=10, rerank_k=5):
+# FastAPI app
+app = FastAPI(title="Web Assistant")
+
+class QueryRequest(BaseModel):
+    question: str
+    top_k: int = 10
+    rerank_k: int = 5
+
+@app.post("/ask")
+def ask_question(request: QueryRequest):
     """
-    Search vector DB, rerank with Cohere, then generate an answer with Gemini.
+    Takes a question, searches Qdrant, reranks with Cohere, 
+    and generates an answer with Gemini.
     """
     # Step 1: Qdrant search
-    query_vector = model.encode(question).tolist()
+    query_vector = model.encode(request.question).tolist()
     results = client.query_points(
         collection_name=COLLECTION_NAME,
         query=query_vector,
-        limit=top_k
+        limit=request.top_k
     ).points
 
-    # Extract candidate chunks
-    docs = [res.payload["chunk"] for res in results]
+    if not results:
+        return {"answer": "No relevant information found in the database."}
 
     # Step 2: Rerank with Cohere
+    docs = [res.payload["chunk"] for res in results]
     rerank_response = co.rerank(
         model="rerank-english-v3.0",
-        query=question,
+        query=request.question,
         documents=docs,
-        top_n=rerank_k
+        top_n=request.rerank_k
     )
 
-    # Collect top reranked docs
+    # Step 3: Collect reranked docs
     top_chunks = []
     for rerank in rerank_response.results:
         doc = results[rerank.index]
@@ -58,12 +65,11 @@ def search_and_answer(question, top_k=10, rerank_k=5):
             f"[{doc.payload['university']}] {doc.payload['title']} - {doc.payload['chunk']}"
         )
 
-    # Step 3: Build context for Gemini
     context = "\n\n".join(top_chunks)
     prompt = f"""
 You are an assistant helping students explore private universities in Sri Lanka.
 
-Question: {question}
+Question: {request.question}
 
 Here are some reference documents:
 {context}
@@ -72,12 +78,11 @@ Based on these references, give a clear, well-structured, and creative answer.
 If relevant, mention the universities by name.
 """
 
-    # Step 4: Generate answer with Gemini
+    # Step 4: Gemini response
     response = gemini_model.generate_content(prompt)
 
-    print("\n💡 Answer:\n")
-    print(response.text)
-
-if __name__ == "__main__":
-    question = input("Enter your question: ")
-    search_and_answer(question, top_k=10, rerank_k=5)
+    return {
+        "question": request.question,
+        "answer": response.text,
+        "sources": top_chunks
+    }

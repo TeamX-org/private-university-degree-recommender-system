@@ -5,3 +5,5 @@ qdrant-client
 python-dotenv
 cohere
 google-generativeai
+fastapi
+uvicorn
