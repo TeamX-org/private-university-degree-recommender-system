@@ -3,6 +3,7 @@ from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
 import os
 import cohere
+import google.generativeai as genai
 
 # Load .env
 load_dotenv()
@@ -11,6 +12,7 @@ COLLECTION_NAME = os.getenv("COLLECTION_NAME")
 QDRANT_URL = os.getenv("QDRANT_URL")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # Connect to Qdrant
 client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
@@ -21,9 +23,13 @@ model = SentenceTransformer("all-MiniLM-L6-v2")
 # Connect to Cohere
 co = cohere.Client(COHERE_API_KEY)
 
-def search_question(question, top_k=10, rerank_k=5):
+# Connect to Gemini
+genai.configure(api_key=GEMINI_API_KEY)
+gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+
+def search_and_answer(question, top_k=10, rerank_k=5):
     """
-    Search the vector database, then rerank results with Cohere.
+    Search vector DB, rerank with Cohere, then generate an answer with Gemini.
     """
     # Step 1: Qdrant search
     query_vector = model.encode(question).tolist()
@@ -44,18 +50,34 @@ def search_question(question, top_k=10, rerank_k=5):
         top_n=rerank_k
     )
 
-    # Step 3: Print reranked results
-    print(f"\n🔎 Question: {question}\n")
-    for idx, rerank in enumerate(rerank_response.results, 1):
-        doc_index = rerank.index
-        doc = results[doc_index]
-        print(f"--- Reranked Result {idx} ---")
-        print(f"Score: {rerank.relevance_score:.4f}")
-        print(f"University: {doc.payload['university']}")
-        print(f"Title/Section: {doc.payload['title']}")
-        print(f"URL: {doc.payload['url']}")
-        print(f"Chunk preview: {doc.payload['chunk'][:300]}...\n")
+    # Collect top reranked docs
+    top_chunks = []
+    for rerank in rerank_response.results:
+        doc = results[rerank.index]
+        top_chunks.append(
+            f"[{doc.payload['university']}] {doc.payload['title']} - {doc.payload['chunk']}"
+        )
+
+    # Step 3: Build context for Gemini
+    context = "\n\n".join(top_chunks)
+    prompt = f"""
+You are an assistant helping students explore private universities in Sri Lanka.
+
+Question: {question}
+
+Here are some reference documents:
+{context}
+
+Based on these references, give a clear, well-structured, and creative answer.
+If relevant, mention the universities by name.
+"""
+
+    # Step 4: Generate answer with Gemini
+    response = gemini_model.generate_content(prompt)
+
+    print("\n💡 Answer:\n")
+    print(response.text)
 
 if __name__ == "__main__":
     question = input("Enter your question: ")
-    search_question(question, top_k=10, rerank_k=5)
+    search_and_answer(question, top_k=10, rerank_k=5)
