@@ -7,3 +7,8 @@ cohere
 google-generativeai
 fastapi
 uvicorn
+langchain
+langchain-community
+ddgs
+langgraph
+langchain-google-genai
