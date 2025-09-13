@@ -1,16 +1,13 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from langchain.tools import Tool
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
-from dotenv import load_dotenv
-import os
 import cohere
 import google.generativeai as genai
+from dotenv import load_dotenv
+import os
 
-# Load .env
+# Load environment
 load_dotenv()
-
 COLLECTION_NAME = os.getenv("COLLECTION_NAME")
 QDRANT_URL = os.getenv("QDRANT_URL")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
@@ -19,55 +16,35 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # Initialize clients
 client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
-model = SentenceTransformer("all-MiniLM-L6-v2")
+sbert_model = SentenceTransformer("all-MiniLM-L6-v2")
 co = cohere.Client(COHERE_API_KEY)
 genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+gemini_model = genai.GenerativeModel("gemini-2.5-flash")
 
-# FastAPI app
-app = FastAPI(title="Web Assistant")
 
-# Add this for CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-class QueryRequest(BaseModel):
-    question: str
-    top_k: int = 10
-    rerank_k: int = 5
-
-@app.post("/ask")
-def ask_question(request: QueryRequest):
-    """
-    Takes a question, searches Qdrant, reranks with Cohere, 
-    and generates an answer with Gemini.
-    """
-    # Step 1: Qdrant search
-    query_vector = model.encode(request.question).tolist()
+def rag_search(question: str, top_k: int = 10, rerank_k: int = 5) -> str:
+    """RAG tool: Search Qdrant database, rerank with Cohere reranker, generate answer with Gemini."""
+    # Step 1: Encode query & search Qdrant
+    query_vector = sbert_model.encode(question).tolist()
     results = client.query_points(
         collection_name=COLLECTION_NAME,
         query=query_vector,
-        limit=request.top_k
+        limit=top_k
     ).points
 
     if not results:
-        return {"answer": "No relevant information found in the database."}
+        return "No relevant information found in the database."
 
     # Step 2: Rerank with Cohere
     docs = [res.payload["chunk"] for res in results]
     rerank_response = co.rerank(
         model="rerank-english-v3.0",
-        query=request.question,
+        query=question,
         documents=docs,
-        top_n=request.rerank_k
+        top_n=rerank_k
     )
 
-    # Step 3: Collect reranked docs
+    # Step 3: Collect top chunks
     top_chunks = []
     for rerank in rerank_response.results:
         doc = results[rerank.index]
@@ -77,27 +54,25 @@ def ask_question(request: QueryRequest):
 
     context = "\n\n".join(top_chunks)
     prompt = f"""
-You are an assistant that helps students explore private universities and courses in Sri Lanka.
+You are a retrieval-augmented generation (RAG) assistant helping students explore private universities and courses in Sri Lanka.
 
-If the user's question is clearly a greeting (like "hi", "hello", "thanks", etc.), 
-reply naturally and friendly without mentioning universities or references.
+Question: {question}
 
-If the user's question is about private universities or courses in Sri Lanka,
-use the reference documents below to give a clear, concise, and helpful answer.
-
-If the answer is not in the references, politely say you don’t have enough information.
-
-Question: {request.question}
-
-Reference Documents:
+Here are some reference documents:
 {context}
+
+Based on these references, give a clear, well-structured, and creative answer.
+If the answer is not in the references, politely say you don’t have enough information.
 """
 
-    # Step 4: Response
+    # Step 4: Generate answer
     response = gemini_model.generate_content(prompt)
+    return response.text
 
-    return {
-        "question": request.question,
-        "answer": response.text,
-        "sources": top_chunks
-    }
+
+# Wrap as a LangChain tool
+RAGTool = Tool(
+    name="RAGTool",
+    func=rag_search,
+    description="Use this tool to answer questions about private universities in Sri Lanka using a vector database and LLM."
+)
