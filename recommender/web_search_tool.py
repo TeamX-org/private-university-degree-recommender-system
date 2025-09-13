@@ -23,7 +23,7 @@ def web_search(query: str) -> str:
     raw_results = duck_tool.run(query)
 
     prompt = f"""
-You are a helpful assistant. The user asked: "{query}".
+You are a helpful web search assistant. The user asked: "{query}".
 Here are some web search results:
 
 {raw_results}
