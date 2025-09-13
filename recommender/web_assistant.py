@@ -77,18 +77,23 @@ def ask_question(request: QueryRequest):
 
     context = "\n\n".join(top_chunks)
     prompt = f"""
-You are an assistant helping students explore private universities in Sri Lanka.
+You are an assistant that helps students explore private universities and courses in Sri Lanka.
+
+If the user's question is clearly a greeting (like "hi", "hello", "thanks", etc.), 
+reply naturally and friendly without mentioning universities or references.
+
+If the user's question is about private universities or courses in Sri Lanka,
+use the reference documents below to give a clear, concise, and helpful answer.
+
+If the answer is not in the references, politely say you don’t have enough information.
 
 Question: {request.question}
 
-Here are some reference documents:
+Reference Documents:
 {context}
-
-Based on these references, give a clear, well-structured, and creative answer.
-If relevant, mention the universities by name.
 """
 
-    # Step 4: Gemini response
+    # Step 4: Response
     response = gemini_model.generate_content(prompt)
 
     return {
